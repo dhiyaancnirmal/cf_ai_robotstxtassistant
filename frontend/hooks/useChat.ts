@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback, useEffect } from 'react'
-import { sendChatMessage, fetchRobotsTxt } from '@/lib/api'
+import { sendChatMessage, fetchRobotsTxt, getHistory } from '@/lib/api'
 import type { ChatMessage } from '@/components/MessageList'
 
 function generateSessionId(): string {
@@ -12,21 +12,72 @@ function generateSessionId(): string {
   })
 }
 
+export interface ChatSession {
+  id: string
+  preview: string
+  timestamp: number
+}
+
+function getSavedSessions(): ChatSession[] {
+  if (typeof window === 'undefined') return []
+  const saved = localStorage.getItem('chat-sessions')
+  return saved ? JSON.parse(saved) : []
+}
+
+function saveSessions(sessions: ChatSession[]) {
+  localStorage.setItem('chat-sessions', JSON.stringify(sessions))
+}
+
 export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [sessionId, setSessionId] = useState<string>('')
+  const [sessions, setSessions] = useState<ChatSession[]>([])
+
+  const loadSession = useCallback(async (id: string) => {
+    try {
+      const history = await getHistory(id)
+      if (history && history.length > 0) {
+        setMessages(history.map((m: { role: string; content: string }, i: number) => ({
+          id: `${id}-${i}`,
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+        })))
+      } else {
+        setMessages([])
+      }
+    } catch {
+      setMessages([])
+    }
+  }, [])
 
   useEffect(() => {
+    const savedSessions = getSavedSessions()
+    setSessions(savedSessions)
+
     const storedSessionId = sessionStorage.getItem('chat-session-id')
     if (storedSessionId) {
       setSessionId(storedSessionId)
+      loadSession(storedSessionId)
     } else {
       const newSessionId = generateSessionId()
       sessionStorage.setItem('chat-session-id', newSessionId)
       setSessionId(newSessionId)
     }
+  }, [loadSession])
+
+  const startNewChat = useCallback(() => {
+    const newSessionId = generateSessionId()
+    sessionStorage.setItem('chat-session-id', newSessionId)
+    setSessionId(newSessionId)
+    setMessages([])
   }, [])
+
+  const switchSession = useCallback(async (id: string) => {
+    sessionStorage.setItem('chat-session-id', id)
+    setSessionId(id)
+    await loadSession(id)
+  }, [loadSession])
 
   const sendMessage = useCallback(async (content: string) => {
     if (!sessionId || isLoading) return
@@ -63,7 +114,7 @@ export function useChat() {
             messageToSend = `${content}\n\nHere is the robots.txt content for ${domain}:\n\`\`\`\n${robotsContent}\n\`\`\``
           }
         } catch {
-          // continue without robots.txt
+          // Continue without the robots.txt content
         }
       }
 
@@ -81,6 +132,19 @@ export function useChat() {
           )
         }
       )
+      // Save session to localStorage
+      const existingSessions = getSavedSessions()
+      const sessionExists = existingSessions.some(s => s.id === sessionId)
+      if (!sessionExists) {
+        const newSession: ChatSession = {
+          id: sessionId,
+          preview: content.slice(0, 50) + (content.length > 50 ? '...' : ''),
+          timestamp: Date.now(),
+        }
+        const updatedSessions = [newSession, ...existingSessions].slice(0, 20)
+        saveSessions(updatedSessions)
+        setSessions(updatedSessions)
+      }
     } catch (error) {
       console.error('Error sending message:', error)
       setMessages((prev) =>
@@ -99,5 +163,9 @@ export function useChat() {
     messages,
     sendMessage,
     isLoading,
+    sessionId,
+    sessions,
+    startNewChat,
+    switchSession,
   }
 }
